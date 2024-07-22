@@ -9,6 +9,8 @@ export class AdminController {
 
   @Get('users')
   getAllUsers() {
+    console.log("test" );
+    // return "test";
     return this.usersService.findAll();
   }
 
