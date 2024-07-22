@@ -1,55 +1,136 @@
-require('dotenv').config(); // To use environment variables
-const TelegramBot = require("node-telegram-bot-api");
+
 const axios = require("axios");
-const express = require('express');
-const app = express();
+const TelegramBot = require("node-telegram-bot-api");
 
-// Set up server
-app.get('/', (req, res) => {
-  res.send('Hello World!');
-});
+// const token = await axios.get('http://localhost:8000/bot');
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
-});
+const server_url = "https://botserver-production.up.railway.app";
 
-// Use environment variables for sensitive data
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const weatherApiKey = process.env.WEATHER_API_KEY;
-
-if (!token || !weatherApiKey) {
-  console.error("Missing necessary environment variables");
-  process.exit(1);
-}
-
-const bot = new TelegramBot(token, { polling: true });
-
-bot.on("message", async (msg) => {
-  const chatId = msg.chat.id;
-  const userInput = msg.text;
-
+const getTelegramBotToken = async () => {
   try {
-    const weatherData = await getWeatherData(userInput);
-    const message = formatWeatherMessage(weatherData);
-    bot.sendMessage(chatId, message);
+    const response = await axios.get(`${server_url}/bot`);
+    return response.data[0].token; // Assuming 'response.data' contains the token.
   } catch (error) {
-    console.error(error);
-    bot.sendMessage(chatId, "City doesn't exist or there was an error retrieving the weather.");
+    console.error("Error fetching Telegram bot token:", error);
+    return null;
   }
+};
+
+getTelegramBotToken().then((token) => {
+  console.log(token);
+  const bot = new TelegramBot(token, { polling: true });
+  const openWeatherMapApiKey = "efcfa2dc99e6464322fb9470de1bcc42";
+
+  const message =
+    "Welcome to Weather bot \nHere are the list of commands \nTo subscribe to the weather bot - /subscribe\n To unsubscribe from the weather bot - /unsubscribe";
+
+  let subscribers = new Set();
+
+  const getSubscriber = async () => {
+    try {
+      const response = await axios.get(`${server_url}/user`);
+      const users = response.data; // Assuming the data is an array of users
+
+      for (const user of users) {
+        subscribers.add([user.chatId, user.status]);
+        const pair = [user.chatId, user.status];
+        if (
+          ![...subscribers].some(
+            (existingPair) =>
+              existingPair[0] === pair[0] && existingPair[1] === pair[1]
+          )
+        ) {
+          subscribers.add(pair);
+        }
+      }
+
+      console.log("Subscribers:", subscribers);
+    } catch (error) {
+      console.error("Error fetching subscribers:", error);
+    }
+  };
+
+  getSubscriber();
+
+  bot.on("message", (msg) => {
+    const chatId = msg.chat.id;
+    const messageText = msg.text;
+
+    if (messageText === "/start") {
+      bot.sendMessage(chatId, message);
+      console.log(chatId);
+    }
+
+    if (messageText === "/subscribe") {
+      bot.sendMessage(
+        chatId,
+        "subscribed to weather bot \nweather updated will be send once a day"
+      );
+
+      const firstName = msg.chat.first_name;
+
+      const user = {
+        firstName: firstName,
+        chatId: chatId,
+      };
+      console.log(user);
+
+      axios
+        .post(`${server_url}/user`, user)
+        .then((response) => {
+          console.log(
+            "Data sent successfully to localhost:3000",
+            response.data
+          );
+
+          if (response.data === "User added successfully") {
+            subscribers.add([chatId, "Active"]);
+          }
+        })
+        .catch((error) => {
+          console.error("Error sending data:", error);
+        });
+    }
+    if (messageText === "/unsubscribe") {
+      subscribers.delete(chatId);
+
+      axios
+        .delete(`${server_url}/user/${chatId}`)
+        .then((res) => {
+          console.log("Data deleted successfully");
+        })
+        .catch((err) => {
+          console.log("Error deleting user");
+        });
+      bot.sendMessage(chatId, "unsubscribed from weather bot");
+    }
+  });
+
+  setInterval(() => {
+    var weatherUpdate = "Today's weather: Sunny and 25°C. Enjoy your day!";
+    for (const user of subscribers) {
+      if (user[1] === "Active") {
+        var chatId = user[0];
+        axios
+          .get(
+            `http://api.openweathermap.org/data/2.5/forecast?id=524901&appid=${openWeatherMapApiKey}`
+          )
+          .then((response) => {
+            const weatherDescription =
+              response.data.list[0].weather[0].description;
+            // const weatherDescription = response.data.daily.weather[0].description;
+            // const temperature = response.data.main.temp;
+            weatherUpdate = `Today\'s weather: ${weatherDescription}. Enjoy your day!`;
+            console.log("weather update send to", chatId);
+            bot.sendMessage(chatId, weatherUpdate);
+          })
+          .catch((error) => {
+            console.error("Error fetching weather data:", error);
+            bot.sendMessage(chatId, weatherUpdate);
+          });
+      }
+    }
+    subscribers = new Set();
+    getSubscriber();
+  }, 60 * 500);
 });
-
-async function getWeatherData(city) {
-  const response = await axios.get(`https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${weatherApiKey}`);
-  return response.data;
-}
-
-function formatWeatherMessage(data) {
-  const weather = data.weather[0].description;
-  const temperature = data.main.temp - 273.15;
-  const city = data.name;
-  const humidity = data.main.humidity;
-  const pressure = data.main.pressure;
-  const windSpeed = data.wind.speed;
-  return `The weather in ${city} is ${weather} with a temperature of ${temperature.toFixed(2)}°C. The humidity is ${humidity}%, the pressure is ${pressure}hPa, and the wind speed is ${windSpeed}m/s.`;
-}
